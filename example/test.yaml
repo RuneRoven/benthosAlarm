@@ -1,0 +1,23 @@
+input:
+  label: ""
+  mqtt:
+    urls: [tcp://192.168.3.22:1883]
+    client_id: "alarm"
+    connect_timeout: 30s
+    topics: [test/new/kitos]
+    auto_replay_nacks: true
+pipeline:
+  processors:
+    - alarm:
+        value: 50
+        stringValue: ""
+        operator: ">"
+        reset: 40
+        resetOperator: "<"
+        filterTime: "0s"
+        alarmText: "Oh, no. My kitchen exploded"
+        addValue: true
+        cleanMsg: true
+output:
+  stdout: {}
+
