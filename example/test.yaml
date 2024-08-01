@@ -4,20 +4,36 @@ input:
     urls: [tcp://192.168.3.22:1883]
     client_id: "alarm"
     connect_timeout: 30s
-    topics: [test/new/kitos]
+    topics: [test/new/kitos/gravel]
     auto_replay_nacks: true
 pipeline:
   processors:
     - alarm:
-        value: 50
-        stringValue: ""
-        operator: ">"
-        reset: 40
-        resetOperator: "<"
-        filterTime: "0s"
-        alarmText: "Oh, no. My kitchen exploded"
-        addValue: true
-        cleanMsg: true
+       # json: "eldorado.onion_soup"                 # json object for the alarm in case of json-data. e.x. 
+                                                    # {"imaginary_value": 312, "not_a_number": "grashopper", "not_prime_number": 4}, 
+                                                    # for multilevel json like {"value1": 123, "value2":133, "level2":{"value1:313}}
+                                                    # use "level2.value1"
+                                                    # the processor will extract the value from "not_prime_number" and compare with the alarm value
+        value: 50.0                                 # Value for the alarm condition
+        stringValue: ""                             # String to compare for trigger the alarm when using a specific string and not a float value
+        operator: ">"                               # Operator for the alarm condition
+        reset: 40.0                                 # Reset value for resetting the alarm trigger
+        resetOperator: "<"                          # Operator for resetting the alarm trigger
+        filterTime: "1s"                            # Time the condition needs to be true before sending the alarm 
+        alarmText: "Oh, no. My kitchen exploded"    # Alarm text for the message
+        alarmObject: "horse"                        # Name of the alarm object for the message e.x {"alarm": true, "msg": "alarmtext", "value": 123}
+        addToJson: true                             # add the alarm to the json structure
+        alarmJsonStruct: "eldorado.alarm"           # specific json outputstruct
+        sendAlarmOnly: false                         # blocks all messages except the alarm message
+        addValue: true                              # adds "value: 123" to the alarmtext
+        cleanMsg: true                              # discards the original message and creates a new json-message containing 
+                                                    # {"send": true, "msg": "alarm text", "value": 123}
+        addMeta: true
 output:
   stdout: {}
 
+  #mqtt:
+  #  urls:
+  #    - tcp://192.168.3.22:1883
+  #  topic: 'test/new/as'
+  #  client_id: 'benthos-ads'
