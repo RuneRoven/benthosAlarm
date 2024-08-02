@@ -35,11 +35,11 @@ type alarms struct {
 	stopTickerChan  chan struct{}
 	mu              sync.Mutex
 	send            bool
-	savedCtx        context.Context
 	savedMsg        *service.Message
 	alarmBool       bool
 }
 
+/*
 func convertToInt(value interface{}) (int, error) {
 	switch v := value.(type) {
 	case float64:
@@ -63,7 +63,7 @@ func convertToInt(value interface{}) (int, error) {
 		return 0, fmt.Errorf("unexpected value type: %T", v)
 	}
 }
-
+*/
 // ParseValue converts an interface{} to float64 or string
 func ParseValue(val interface{}) (float64, string, error) {
 	switch v := val.(type) {
@@ -167,7 +167,45 @@ func convertToTime(durationStr string) (time.Duration, error) {
 	}
 	return totalDuration, nil
 }
+func (a *alarms) parseConditions(operator string) string {
+	switch operator {
+	case "<":
+		return "smaller than"
+	case "<=":
+		return "smaller or equal than"
+	case ">":
+		return "bigger than"
+	case ">=":
+		return "bigger or equal than"
+	case "!=":
+		return "not equal to"
+	case "=":
+		return "equal to"
+	default:
+		return ""
+	}
+}
+func (a *alarms) conditionsMsg() string {
+	msg := ""
+	/*
+		if a.json != "" {
+			keys := strings.Split(a.json, ".")
+			lastKey := ""
+			if len(keys) > 0 {
+				// Get the last key
+				lastKey = keys[len(keys)-1]
+			}*/
+	if a.stringValue != "" {
+		msg = fmt.Sprintf("%s%s%s%s", "Alarm when value is equal to ", a.stringValue, " and reset when value is not equal to ", a.stringValue)
 
+	} else {
+		floatValue, _, _ := ParseValue(a.value)
+		floatReset, _, _ := ParseValue(a.reset)
+		msg = fmt.Sprintf("%s%s%s%f%s%s%s%f", "Alarm when value is ", a.parseConditions(a.operator), " ", floatValue, " and reset when value is ", a.parseConditions(a.resetOperator), " ", floatReset)
+	}
+
+	return msg
+}
 func (a *alarms) condition(operator string, value, threshold float64) (bool, error) {
 	switch operator {
 	case "<":
@@ -220,39 +258,13 @@ func updateJSONAtPath(data map[string]interface{}, path string, newData map[stri
 func (a *alarms) checkAndTriggerAlarm() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// Ensure savedCtx and savedMsg are not nil
-	if a.savedCtx == nil || a.savedMsg == nil {
-		log.Println("saved context or message is nil, skipping alarm check")
-		return
-	}
 	a.send = false
 	if !a.startTime.IsZero() {
-
 		if time.Since(a.startTime) >= a.filterTime && !a.trigger {
 			a.trigger = true
 			a.send = true
-			msgCopy := a.savedMsg.Copy()
-			//a.Process(a.savedCtx, msgCopy)
-			// Handle the alarm action here (e.g., send a notification)
-			log.Println("timer triggered")
 			a.alarmBool = true
-			//displayServiceMessage(a.savedMsg)
-			log.Println("Invoking Process method with new message")
-			//batch, err := a.Process(a.savedCtx, msgCopy)
-			// Use a stable context for timer-triggered processing
-			timerCtx := a.savedCtx
 
-			a.Process(timerCtx, msgCopy)
-
-			/*
-				if err != nil {
-					log.Printf("Error processing new message: %v", err)
-				} else {
-					log.Printf("Timer triggered and processed successfully, batch size: %d", len(batch))
-					for _, msg := range batch {
-						displayServiceMessage(msg)
-					}
-				}*/
 		}
 	}
 }
@@ -272,12 +284,14 @@ func (a *alarms) startTicker() {
 }
 func (a *alarms) createNewMsg(msgContent string, msgValue interface{}, dataMap map[string]interface{}, msg *service.Message) *service.Message {
 	newMsg := service.NewMessage(nil)
+	conditions := a.conditionsMsg()
 	if a.cleanMsg {
 		newMsg = service.NewMessage([]byte{})
 		newMsg.SetStructured(map[string]interface{}{
-			a.alarmObject: a.send,
-			"msg":         msgContent,
-			"value":       msgValue,
+			a.alarmObject:  a.send,
+			"msg: ":        msgContent,
+			"value: ":      msgValue,
+			"conditions: ": conditions,
 		})
 		msg.MetaWalk(func(key, value string) error {
 			dataMap[key] = value
@@ -288,6 +302,7 @@ func (a *alarms) createNewMsg(msgContent string, msgValue interface{}, dataMap m
 			dataMap[a.alarmObject] = a.send
 			dataMap["msg"] = msgContent
 			dataMap["value"] = msgValue
+			dataMap["conditions"] = conditions
 		}
 		if a.addMeta {
 			// Extract metadata and add to dataMap
@@ -303,6 +318,7 @@ func (a *alarms) createNewMsg(msgContent string, msgValue interface{}, dataMap m
 			jsonMsg[a.alarmObject] = a.send
 			jsonMsg["msg"] = msgContent
 			jsonMsg["value"] = msgValue
+			jsonMsg["conditions"] = conditions
 			err := updateJSONAtPath(dataMap, a.alarmJsonStruct, jsonMsg)
 			if err != nil {
 				return nil
@@ -459,6 +475,7 @@ func newAlarmProcessor(conf *service.ParsedConfig, mgr *service.Resources) (*ala
 		addValue:        addValue,
 		cleanMsg:        cleanMsg,
 		addMeta:         addMeta,
+		stopTickerChan:  make(chan struct{}),
 	}
 	if a.filterTime > 0 {
 		go a.startTicker()
@@ -467,11 +484,18 @@ func newAlarmProcessor(conf *service.ParsedConfig, mgr *service.Resources) (*ala
 }
 
 func (a *alarms) Process(ctx context.Context, msg *service.Message) (service.MessageBatch, error) {
-	log.Println("alarmbool:", a.alarmBool)
-	log.Printf("Processing message with context: %p\n", ctx)
-	msgCopy := msg // copy original message
-	a.savedCtx = ctx
-	a.savedMsg = msg.Copy()
+	var msgCopy *service.Message
+	_, pingOk := msg.MetaGetMut("ping") // check if generate input is used with the correct meta
+
+	if pingOk && !a.alarmBool {
+		return nil, nil
+	} else if pingOk && a.alarmBool {
+		msg = a.savedMsg
+	} else {
+		msgCopy = msg // copy original message
+		a.savedMsg = msg
+	}
+
 	//displayServiceMessage(msg)
 	// Parse incoming message as structured
 	data, err := msg.AsStructured()
@@ -562,7 +586,7 @@ func (a *alarms) Process(ctx context.Context, msg *service.Message) (service.Mes
 	//log.Println("Comparison result, sendFlag:", send)
 	//KVAR ATT GÖRA!!
 	//se till så alarmtimer går även om det inte kommer nya meddelanden..
-	// lägg till alarm conditions som text i meddelandet
+	// dubbelkolla json och stringValue så båda funkar samtidigt
 
 	// Create a new message with 'root.send' set to true
 	var msgContent string
@@ -584,6 +608,7 @@ func (a *alarms) Process(ctx context.Context, msg *service.Message) (service.Mes
 	newMsg := service.NewMessage(nil)
 	if a.send {
 		newMsg = a.createNewMsg(msgContent, msgValue, dataMap, msg)
+		a.alarmBool = false
 	} else {
 		if !a.sendAlarmOnly {
 			newMsg = msgCopy // send original message
@@ -591,13 +616,14 @@ func (a *alarms) Process(ctx context.Context, msg *service.Message) (service.Mes
 			return nil, nil // block all messages
 		}
 	}
-	log.Println("send : ", a.send)
 	// Return the new message in a batch
 	return service.MessageBatch{newMsg}, nil
 }
 
 func (a *alarms) Close(ctx context.Context) error {
-	log.Println("closing processor")
-	close(a.stopTickerChan)
+	if a.stopTickerChan != nil {
+		close(a.stopTickerChan)
+		a.stopTickerChan = nil // Prevent future sends on a closed channel
+	}
 	return nil
 }

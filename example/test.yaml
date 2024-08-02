@@ -1,15 +1,19 @@
 input:
-  label: ""
-  mqtt:
-    urls: [tcp://192.168.3.22:1883]
-    client_id: "alarm"
-    connect_timeout: 30s
-    topics: [test/new/kitos/gravel]
-    auto_replay_nacks: true
+  broker:
+    inputs:
+      - mqtt:
+          urls: [tcp://192.168.3.22:1883]
+          client_id: "alarm"
+          connect_timeout: 30s
+          topics: [test/new/prostetic_brain]
+          auto_replay_nacks: true
+      - generate:
+          interval: '@every 1s'
+          mapping: meta ping = true
 pipeline:
   processors:
     - alarm:
-       # json: "eldorado.onion_soup"                 # json object for the alarm in case of json-data. e.x. 
+        json: "eldorado.onion_soup"                 # json object for the alarm in case of json-data. e.x. 
                                                     # {"imaginary_value": 312, "not_a_number": "grashopper", "not_prime_number": 4}, 
                                                     # for multilevel json like {"value1": 123, "value2":133, "level2":{"value1:313}}
                                                     # use "level2.value1"
@@ -21,11 +25,11 @@ pipeline:
         resetOperator: "<"                          # Operator for resetting the alarm trigger
         filterTime: "1s"                            # Time the condition needs to be true before sending the alarm 
         alarmText: "Oh, no. My kitchen exploded"    # Alarm text for the message
-        alarmObject: "horse"                        # Name of the alarm object for the message e.x {"alarm": true, "msg": "alarmtext", "value": 123}
+        alarmObject: "my_horse_is_broken"           # Name of the alarm object for the message e.x {"alarm": true, "msg": "alarmtext", "value": 123}
         addToJson: true                             # add the alarm to the json structure
-        alarmJsonStruct: "eldorado.alarm"           # specific json outputstruct
-        sendAlarmOnly: false                         # blocks all messages except the alarm message
-        addValue: true                              # adds "value: 123" to the alarmtext
+        alarmJsonStruct: "eldorado.alarm"           # specific json output struct
+        sendAlarmOnly: false                        # blocks all messages except the alarm message
+        addValue: true                              # adds "value: 123" to the alarm text
         cleanMsg: true                              # discards the original message and creates a new json-message containing 
                                                     # {"send": true, "msg": "alarm text", "value": 123}
         addMeta: true
