@@ -22,6 +22,7 @@ type alarms struct {
 	reset           float64
 	resetOperator   string
 	filterTime      time.Duration
+	sendInterval    time.Duration
 	alarmText       string
 	alarmObject     string
 	addToJson       bool
@@ -31,39 +32,37 @@ type alarms struct {
 	cleanMsg        bool
 	addMeta         bool
 	startTime       time.Time // to track when the condition first becomes true
+	lastTriggerTime time.Time
 	trigger         bool
+	alarmTriggered  bool
+	timerTriggered  bool
 	stopTickerChan  chan struct{}
 	mu              sync.Mutex
 	send            bool
 	savedMsg        *service.Message
-	alarmBool       bool
 }
 
-/*
-func convertToInt(value interface{}) (int, error) {
-	switch v := value.(type) {
-	case float64:
-		return int(v), nil
-	case int:
-		return v, nil
-	case int64:
-		return int(v), nil
-	case string:
-		return strconv.Atoi(v)
-	case json.Number:
-		// If the value comes in as json.Number, we can try to parse it as an integer
-		if iValue, err := v.Int64(); err == nil {
-			return int(iValue), nil
-		}
-		if fValue, err := v.Float64(); err == nil {
-			return int(fValue), nil
-		}
-		return 0, fmt.Errorf("unable to parse json.Number: %v", v)
-	default:
-		return 0, fmt.Errorf("unexpected value type: %T", v)
-	}
-}
-*/
+var alarmConf = service.NewConfigSpec().
+	Summary("Creates an processor that sends data when conditions are met. Created by Daniel H").
+	Description("This processor plugin enables Benthos to send data when specific conditions are met. " +
+		"Configure the plugin by specifying the alarm value, reset value, operator and tagname.").
+	Field(service.NewFloatField("value").Description("Alarm value, default '100'").Default(100.0)).
+	Field(service.NewStringField("json").Description("tag name is value is json)").Default("")).
+	Field(service.NewStringField("stringValue").Description("Alarm value if using string)").Default("")).
+	Field(service.NewStringField("operator").Description("allowed operators: <,>,=").Default(">")).
+	Field(service.NewFloatField("reset").Description("reset value").Default(0.0)).
+	Field(service.NewStringField("resetOperator").Description("reset operator").Default("<")).
+	Field(service.NewStringField("filterTime").Description("Time filter before trigger. Default 0s").Default("0s")).
+	Field(service.NewStringField("sendInterval").Description("Interval time before resending alarm. Default 0s").Default("0s")).
+	Field(service.NewStringField("alarmText").Description("Alarm text to be added to the alarm. Default 'Alarm'").Default("Alarm")).
+	Field(service.NewStringField("alarmObject").Description("Name of the json object for the alarm. Default 'alarm'").Default("alarm")).
+	Field(service.NewBoolField("addToJson").Description("Add the alarm to the json structure").Default(false)).
+	Field(service.NewStringField("alarmJsonStruct").Description("specific json struct for output. Default ''").Default("")).
+	Field(service.NewBoolField("sendAlarmOnly").Description("Block all messages except alarm").Default(true)).
+	Field(service.NewBoolField("addValue").Description("Add the current value to the alarm text").Default(false)).
+	Field(service.NewBoolField("cleanMsg").Description("Create a new clean msg with alarmtext only").Default(true)).
+	Field(service.NewBoolField("addMeta").Description("Add existing metadata to message").Default(false))
+
 // ParseValue converts an interface{} to float64 or string
 func ParseValue(val interface{}) (float64, string, error) {
 	switch v := val.(type) {
@@ -117,6 +116,7 @@ func ParseValue(val interface{}) (float64, string, error) {
 		} else {
 			return 0, string(v), nil // Return as string if it's not a valid float
 		}
+
 	case map[string]interface{}:
 		// Handle nested map (for JSON objects)
 		// You may want to recurse or handle specific fields here
@@ -258,19 +258,31 @@ func updateJSONAtPath(data map[string]interface{}, path string, newData map[stri
 func (a *alarms) checkAndTriggerAlarm() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.send = false
+
+	// Check if the alarm is initially triggered based on startTime and filterTime
 	if !a.startTime.IsZero() {
-		if time.Since(a.startTime) >= a.filterTime && !a.trigger {
+		if time.Since(a.startTime) >= a.filterTime && !a.trigger && a.alarmTriggered {
 			a.trigger = true
 			a.send = true
-			a.alarmBool = true
-
+			a.timerTriggered = true
+		}
+	}
+	// If sendInterval is set and the alarm was initially triggered, check for re-triggering
+	if a.sendInterval > 0 && a.trigger && a.alarmTriggered {
+		now := time.Now()
+		if a.lastTriggerTime.IsZero() {
+			a.lastTriggerTime = now // ensure it is not double triggering
+		}
+		// Calculate elapsed time since the last trigger
+		if now.Sub(a.lastTriggerTime) >= a.sendInterval {
+			a.send = true
+			a.timerTriggered = true
+			a.lastTriggerTime = now
 		}
 	}
 }
 func (a *alarms) startTicker() {
-	log.Println("timer started with filtertime: ", a.filterTime)
-	ticker := time.NewTicker(a.filterTime)
+	ticker := time.NewTicker(1000 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -344,42 +356,71 @@ func (a *alarms) createNewMsg(msgContent string, msgValue interface{}, dataMap m
 	}
 	return newMsg
 }
-func displayServiceMessage(msg *service.Message) {
-	data, err := msg.AsStructured()
+func (a *alarms) alarmCheck(floatValue float64, strValue string) (bool, bool, error) {
+	var checkAlarm bool
+	var checkReset bool
+	var err error
+
+	if a.stringValue != "" {
+		// add some check here to only use the string if != ""
+		if strValue == a.stringValue {
+			checkAlarm = true
+		}
+	} else {
+		checkAlarm, err = a.condition(a.operator, floatValue, a.value)
+	}
 	if err != nil {
-		log.Println("Error getting structured data:", err)
-		return
+		return false, false, err
 	}
 
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		log.Println("Error marshalling message:", err)
-		return
+	// check if alarm should reset if the reset threshold i met
+	if a.stringValue != "" {
+		if strValue != a.stringValue {
+			checkReset = true
+		}
+	} else {
+		checkReset, err = a.condition(a.resetOperator, floatValue, a.value)
 	}
-
-	log.Println("Message content:", string(jsonData))
+	if err != nil {
+		return false, false, err
+	}
+	return checkAlarm, checkReset, err
 }
-
-var alarmConf = service.NewConfigSpec().
-	Summary("Creates an processor that sends data when conditions are met. Created by Daniel H").
-	Description("This processor plugin enables Benthos to send data when specific conditions are met. " +
-		"Configure the plugin by specifying the alarm value, reset value, operator and tagname.").
-	Field(service.NewFloatField("value").Description("Alarm value, default '100'").Default(100.0)).
-	Field(service.NewStringField("json").Description("tag name is value is json)").Default("")).
-	Field(service.NewStringField("stringValue").Description("Alarm value if using string)").Default("")).
-	Field(service.NewStringField("operator").Description("allowed operators: <,>,=").Default(">")).
-	Field(service.NewFloatField("reset").Description("reset value").Default(0.0)).
-	Field(service.NewStringField("resetOperator").Description("reset operator").Default("<")).
-	Field(service.NewStringField("filterTime").Description("Time filter before trigger. Default 0s").Default("0s")).
-	Field(service.NewStringField("alarmText").Description("Alarm text to be added to the alarm. Default 'Alarm'").Default("Alarm")).
-	Field(service.NewStringField("alarmObject").Description("Name of the json object for the alarm. Default 'alarm'").Default("alarm")).
-	Field(service.NewBoolField("addToJson").Description("Add the alarm to the json structure").Default(false)).
-	Field(service.NewStringField("alarmJsonStruct").Description("specific json struct for output. Default ''").Default("")).
-	Field(service.NewBoolField("sendAlarmOnly").Description("Block all messages except alarm").Default(true)).
-	Field(service.NewBoolField("addValue").Description("Add the current value to the alarm text").Default(false)).
-	Field(service.NewBoolField("cleanMsg").Description("Create a new clean msg with alarmtext only").Default(true)).
-	Field(service.NewBoolField("addMeta").Description("Add existing metadata to message").Default(false))
-
+func (a *alarms) checkJson(dataMap map[string]interface{}, data any) (float64, string, error) {
+	var floatValue float64
+	var strValue string
+	var err error
+	// check if alarm tag is a json and convert to string or float
+	if a.json != "" {
+		floatValue, strValue, err = extractValueFromPath(dataMap, a.json)
+		if err != nil {
+			log.Println("error extracting value:", err)
+			return 0.0, "", err
+		}
+	} else {
+		floatValue, strValue, err = ParseValue(data)
+	}
+	return floatValue, strValue, err
+}
+func (a *alarms) createContent(floatValue float64, strValue string) (string, interface{}) {
+	var msgContent string
+	if a.addValue {
+		if a.stringValue != "" {
+			msgContent = fmt.Sprintf("%s%s%s", a.alarmText, ", value: ", strValue)
+		} else {
+			msgContent = fmt.Sprintf("%s%s%s", a.alarmText, ", value: ", strconv.FormatFloat(floatValue, 'f', -1, 64))
+		}
+	} else {
+		msgContent = a.alarmText
+	}
+	var msgValue interface{}
+	if strValue != "" {
+		msgValue = strValue
+	} else {
+		msgValue = floatValue
+	}
+	return msgContent, msgValue
+}
 func init() {
 	err := service.RegisterProcessor(
 		"alarm",
@@ -393,7 +434,6 @@ func init() {
 		panic(err)
 	}
 }
-
 func newAlarmProcessor(conf *service.ParsedConfig, mgr *service.Resources) (*alarms, error) {
 	json, err := conf.FieldString("json")
 	if err != nil {
@@ -424,6 +464,14 @@ func newAlarmProcessor(conf *service.ParsedConfig, mgr *service.Resources) (*ala
 		return nil, err
 	}
 	filterTime, err := convertToTime(filterTimeString)
+	if err != nil {
+		return nil, err
+	}
+	sendIntervalString, err := conf.FieldString("sendInterval")
+	if err != nil {
+		return nil, err
+	}
+	sendInterval, err := convertToTime(sendIntervalString)
 	if err != nil {
 		return nil, err
 	}
@@ -467,6 +515,7 @@ func newAlarmProcessor(conf *service.ParsedConfig, mgr *service.Resources) (*ala
 		reset:           reset,
 		resetOperator:   resetOperator,
 		filterTime:      filterTime,
+		sendInterval:    sendInterval,
 		alarmText:       alarmText,
 		alarmObject:     alarmObject,
 		addToJson:       addToJson,
@@ -477,26 +526,24 @@ func newAlarmProcessor(conf *service.ParsedConfig, mgr *service.Resources) (*ala
 		addMeta:         addMeta,
 		stopTickerChan:  make(chan struct{}),
 	}
-	if a.filterTime > 0 {
+	if a.filterTime > 0 || a.sendInterval > 0 {
 		go a.startTicker()
 	}
 	return a, nil
 }
-
 func (a *alarms) Process(ctx context.Context, msg *service.Message) (service.MessageBatch, error) {
 	var msgCopy *service.Message
-	_, pingOk := msg.MetaGetMut("ping") // check if generate input is used with the correct meta
+	_, ping := msg.MetaGetMut("ping") // check if generate input is used with the correct meta
 
-	if pingOk && !a.alarmBool {
-		return nil, nil
-	} else if pingOk && a.alarmBool {
+	if ping && !a.timerTriggered {
+		return nil, nil // block ping messages
+	} else if ping && a.timerTriggered {
 		msg = a.savedMsg
 	} else {
 		msgCopy = msg // copy original message
 		a.savedMsg = msg
 	}
 
-	//displayServiceMessage(msg)
 	// Parse incoming message as structured
 	data, err := msg.AsStructured()
 	if err != nil {
@@ -509,106 +556,51 @@ func (a *alarms) Process(ctx context.Context, msg *service.Message) (service.Mes
 	if !ok {
 		dataMap = make(map[string]interface{})
 	}
-
-	var floatValue float64
-	var strValue string
-	var checkAlarm bool
-	var checkReset bool
-
-	// check if alarm tag is a json and convert to string or float
-	if a.json != "" {
-		floatValue, strValue, err = extractValueFromPath(dataMap, a.json)
-		if err != nil {
-			log.Println("error extracting value:", err)
-			return nil, fmt.Errorf("error extracting value: %w", err)
-		}
-	} else {
-		floatValue, strValue, err = ParseValue(data)
-	}
-
-	// Compare the value with the specified limit
-	if !a.alarmBool {
-		a.send = false
-	}
-	if a.stringValue != "" {
-		// add some check here to only use the string if != ""
-		if strValue == a.stringValue {
-			checkAlarm = true
-		}
-	} else {
-		checkAlarm, err = a.condition(a.operator, floatValue, a.value)
-	}
+	//  check in we use json input
+	floatValue, strValue, err := a.checkJson(dataMap, data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to check json: %v", err)
 	}
-
-	// check if alarm should reset if the reset threshold i met
-	if a.stringValue != "" {
-		if strValue != a.stringValue {
-			checkReset = true
-		}
-	} else {
-		checkReset, err = a.condition(a.resetOperator, floatValue, a.value)
-	}
+	// check alarm
+	checkAlarm, checkReset, err := a.alarmCheck(floatValue, strValue)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to check alarm: %v", err)
 	}
-
 	// if alarm condition is met check if it should send if it is not triggered
-
-	if checkAlarm && !a.alarmBool {
+	if checkAlarm {
 		if a.filterTime == 0 {
 			if !a.trigger {
 				a.send = true
 				a.trigger = true
+				a.alarmTriggered = true
 			}
 		} else {
-			// if timer is used, check if it has expired and send alarm when true
-			//a.checkAndTriggerAlarm()
+			a.alarmTriggered = true
 			if a.startTime.IsZero() {
 				// Condition is true for the first time, start the timer
 				a.startTime = time.Now()
-			} else if time.Since(a.startTime) >= a.filterTime {
-				if !a.trigger {
-					a.send = true
-					a.trigger = true
-				}
 			}
 		}
 	}
+	// if reset, reset triggers etc.
 	if checkReset {
 		a.trigger = false
 		a.startTime = time.Time{}
-		a.alarmBool = false
+		a.send = false
+		a.timerTriggered = false
+		a.alarmTriggered = false
+		a.lastTriggerTime = time.Time{}
 	}
-	//log.Println("trigger:", a.trigger)
-	// Debug: Log the comparison result
-	//log.Println("Comparison result, sendFlag:", send)
+
 	//KVAR ATT GÖRA!!
-	//se till så alarmtimer går även om det inte kommer nya meddelanden..
 	// dubbelkolla json och stringValue så båda funkar samtidigt
 
-	// Create a new message with 'root.send' set to true
-	var msgContent string
-	if a.addValue {
-		if a.stringValue != "" {
-			msgContent = fmt.Sprintf("%s%s%s", a.alarmText, ", value: ", strValue)
-		} else {
-			msgContent = fmt.Sprintf("%s%s%s", a.alarmText, ", value: ", strconv.FormatFloat(floatValue, 'f', -1, 64))
-		}
-	} else {
-		msgContent = a.alarmText
-	}
-	var msgValue interface{}
-	if strValue != "" {
-		msgValue = strValue
-	} else {
-		msgValue = floatValue
-	}
+	msgContent, msgValue := a.createContent(floatValue, strValue) // create new content for message
 	newMsg := service.NewMessage(nil)
 	if a.send {
-		newMsg = a.createNewMsg(msgContent, msgValue, dataMap, msg)
-		a.alarmBool = false
+		newMsg = a.createNewMsg(msgContent, msgValue, dataMap, msg) // create a new message
+		a.send = false
+		a.timerTriggered = false
 	} else {
 		if !a.sendAlarmOnly {
 			newMsg = msgCopy // send original message

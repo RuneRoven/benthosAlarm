@@ -23,7 +23,8 @@ pipeline:
         operator: ">"                               # Operator for the alarm condition
         reset: 40.0                                 # Reset value for resetting the alarm trigger
         resetOperator: "<"                          # Operator for resetting the alarm trigger
-        filterTime: "1s"                            # Time the condition needs to be true before sending the alarm 
+        filterTime: "0s"                            # Time the condition needs to be true before sending the alarm 
+        sendInterval: "0s"                            # Interval time for resending the alarm. for example "1h30m" will send the alarm every 1 and a half hour until reset 
         alarmText: "Oh, no. My kitchen exploded"    # Alarm text for the message
         alarmObject: "my_horse_is_broken"           # Name of the alarm object for the message e.x {"alarm": true, "msg": "alarmtext", "value": 123}
         addToJson: true                             # add the alarm to the json structure
