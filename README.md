@@ -23,10 +23,10 @@ When the conditions for the alarm is met it will send 1 message and block until 
 **Default alarm message:**  
 ```json   
 {
-  alarm: true,
-  msg: "Alarm",    
-  value: 123,    
-  conditions: "Alarm when value is greater than 43.0 and reset when  value is smaller than 5.0" 
+  "alarm": true,
+  "msg": "Alarm",    
+  "value": 123,    
+  "conditions": "Alarm when value is greater than 43.0 and reset when  value is smaller than 5.0" 
 }  
 ```
 - **value**  
@@ -48,13 +48,13 @@ Same as the operator but for resetting the alarm.
 **json:**  
 Json object for the alarm in case of json-data. e.x. if the data is: 
 ```json
-{imaginary_value: 312, not_a_number: "grashopper", not_prime_number: 4}
+{"imaginary_value": 312, "not_a_number": "grashopper", "not_prime_number": 4}
 ```  
 and you want to watch "not_prime_number" use:  
 **json:** "not_prime_number"    
 for multilevel json like:
 ```json
-{forest: 123, my_neighbors_bedroom:133, treadmills:{sauna1:313}}
+{"forest": 123, "my_neighbors_bedroom":133, "treadmills":{"sauna1":313}}
 ```  
 and you want to watch "sauna1" use:  
 **json:** "treadmills.sauna1"  

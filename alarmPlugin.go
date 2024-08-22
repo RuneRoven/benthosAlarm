@@ -330,21 +330,6 @@ func (a *alarms) createNewMsg(msgContent string, msgValue interface{}, dataMap m
 		}
 		newMsg = service.NewMessage(nil)
 		newMsg.SetStructured(dataMap)
-		/*
-			// Add the new fields to the original data
-			dataMap[a.alarmObject] = send
-			dataMap["msg"] = msgContent
-			dataMap["value"] = msgValue
-
-			// Extract metadata and add to dataMap
-			msg.MetaWalk(func(key, value string) error {
-				dataMap[key] = value
-				return nil
-			})
-			// Create a new message with the updated data
-			newMsg = service.NewMessage(nil)
-			newMsg.SetStructured(dataMap)
-		*/
 	}
 	return newMsg
 }
