@@ -45,7 +45,7 @@ type alarms struct {
 var alarmConf = service.NewConfigSpec().
 	Summary("Creates an processor that sends data when conditions are met. Created by Daniel H").
 	Description("This processor plugin enables Benthos to send data when specific conditions are met. " +
-		"Configure the plugin by specifying the alarm value, reset value, operator and tagname.").
+		"Configure the plugin by specifying the alarm value, reset value, operator and reset operator.").
 	Field(service.NewFloatField("value").Description("Alarm value, default '100'").Default(100.0)).
 	Field(service.NewStringField("json").Description("tag name is value is json)").Default("")).
 	Field(service.NewStringField("stringValue").Description("Alarm value if using string)").Default("")).
@@ -187,14 +187,6 @@ func (a *alarms) parseConditions(operator string) string {
 }
 func (a *alarms) conditionsMsg() string {
 	msg := ""
-	/*
-		if a.json != "" {
-			keys := strings.Split(a.json, ".")
-			lastKey := ""
-			if len(keys) > 0 {
-				// Get the last key
-				lastKey = keys[len(keys)-1]
-			}*/
 	if a.stringValue != "" {
 		msg = fmt.Sprintf("%s%s%s%s", "Alarm when value is equal to ", a.stringValue, " and reset when value is not equal to ", a.stringValue)
 
@@ -363,7 +355,7 @@ func (a *alarms) alarmCheck(floatValue float64, strValue string) (bool, bool, er
 
 	if a.stringValue != "" {
 		// add some check here to only use the string if != ""
-		if strValue == a.stringValue {
+		if (strValue == a.stringValue && a.operator == "=") || (strValue != a.stringValue && a.operator == "!=") {
 			checkAlarm = true
 		}
 	} else {
@@ -375,7 +367,7 @@ func (a *alarms) alarmCheck(floatValue float64, strValue string) (bool, bool, er
 
 	// check if alarm should reset if the reset threshold i met
 	if a.stringValue != "" {
-		if strValue != a.stringValue {
+		if (strValue != a.stringValue && a.operator == "=") || (strValue == a.stringValue && a.operator == "!=") {
 			checkReset = true
 		}
 	} else {
@@ -591,9 +583,6 @@ func (a *alarms) Process(ctx context.Context, msg *service.Message) (service.Mes
 		a.alarmTriggered = false
 		a.lastTriggerTime = time.Time{}
 	}
-
-	//KVAR ATT GÖRA!!
-	// dubbelkolla json och stringValue så båda funkar samtidigt
 
 	msgContent, msgValue := a.createContent(floatValue, strValue) // create new content for message
 	newMsg := service.NewMessage(nil)

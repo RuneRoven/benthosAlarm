@@ -41,4 +41,4 @@ output:
   #  urls:
   #    - tcp://192.168.3.22:1883
   #  topic: 'test/new/as'
-  #  client_id: 'benthos-ads'
+  #  client_id: 'benthos-alarm'
